@@ -1,5 +1,5 @@
 {
-  "name": "cardinal",
+  "name": "Cardinal",
   "license": "MIT",
   "description": "A starter project for deploying an Airnode and making requests to it",
   "scripts": {

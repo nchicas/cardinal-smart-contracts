@@ -2,8 +2,8 @@
  * Cardinal: Smart virtual debit card funded by Bitcoins
  * 
  * Cardinal connects with banks using OBP standard to provide a virtual debit card to its clients,
- * the transactions with the card are funded with a Bitcoin wallet from the client and transfered
- * to the bank, so the bank can act as a liquidity pool with the card networks.
+ * the transactions with the card are funded with a Bitcoin wallet from the client and transferred
+ * to the bank, so the bank can act as a liquidity pool for the card networks.
  *
  * Version: 0.1.0
  *
@@ -14,7 +14,7 @@ pragma solidity 0.6.12;
 
 //import "@api3/airnode-protocol/contracts/AirnodeClient.sol";
 
-contract CardFunding /*is AirnodeClient*/ {
+contract Cardinal /*is AirnodeClient*/ {
 
     enum State { None, Initiated, Completed, Reverted }
 
@@ -70,17 +70,19 @@ contract CardFunding /*is AirnodeClient*/ {
         external 
         payable 
         onlyCardholder 
+        returns (uint256) 
     {
-        emit FundsAdded(msg.value); 
+        emit FundsAdded(msg.value);
+        return address(this).balance;
     }
 
     // Add funds to the card by address
     receive() 
         external 
         payable 
-        onlyCardholder 
+        onlyCardholder
     {
-        emit FundsAdded(msg.value); 
+        emit FundsAdded(msg.value);
     }
 
     // If a payment flow is started with the associated card, we hold the BTC equivalent amount
@@ -96,7 +98,7 @@ contract CardFunding /*is AirnodeClient*/ {
             checkLocking
             validateAML(amount) 
     {
-        uint256 amountBTC = getBTCPrice(amount, currency);
+        uint256 amountBTC = convertToBTC(amount, currency);
         require(requesterCard == cardId, "Not valid card");
         require(address(this).balance >= amountBTC, "Insufficient funds");
 
@@ -112,22 +114,25 @@ contract CardFunding /*is AirnodeClient*/ {
         transactions[transactionId] = transaction;
         references[transactionCount++] = transactionId;
 
-        confirmTransaction(referenceCode, transactionId);
+        confirmTransaction(referenceCode);
     }
 
     // Getting BTC price for the transaction currency
-    function getBTCPrice(uint256 amount, bytes32 currency) 
+    function convertToBTC(uint256 amount, bytes32 currency) 
         internal 
+        pure
         returns (uint256) 
     {
-        // Simulation for dollar - 60K
-        return amount / 60000;
+        // Simulation
+        sha256(abi.encodePacked(currency)); //
+        return amount * 1000;
     }
 
     // If the funds are secured, with notify the bank to procede with the transactions
-    function confirmTransaction(bytes32 referenceCode, bytes32 transactionId) 
+    function confirmTransaction(bytes32 referenceCode) 
         internal 
     {
+        sha256(abi.encodePacked(referenceCode)); //
         lastLocked = now;
     }
 
@@ -139,13 +144,14 @@ contract CardFunding /*is AirnodeClient*/ {
         onlyBank 
         validTransaction(requesterCard, referenceCode) 
     {
-        bytes32 transactionId = sha256(abi.encodePacked(cardId, referenceCode));
+        bytes32 transactionId = sha256(abi.encodePacked(requesterCard, referenceCode));
         Transaction storage transaction = transactions[transactionId];
         transaction.state = State.Completed;
         transaction.timestamp = now;
 
         //Transfer funds to the bank and realease lock
-        bank.call{value:transaction.amountBTC}('');
+        (bool success, ) = bank.call{value:transaction.amountBTC}('');
+        assert(success);
         lastLocked = 0;
 
         emit PaymentCompleted(transaction.amountBTC);
@@ -159,7 +165,7 @@ contract CardFunding /*is AirnodeClient*/ {
         onlyBank 
         validTransaction(requesterCard, referenceCode) 
     {
-        bytes32 transactionId = sha256(abi.encodePacked(cardId, referenceCode));
+        bytes32 transactionId = sha256(abi.encodePacked(requesterCard, referenceCode));
         Transaction storage transaction = transactions[transactionId];
         transaction.state = State.Reverted;
         transaction.timestamp = now;
@@ -214,7 +220,8 @@ contract CardFunding /*is AirnodeClient*/ {
                 bytes32 transactionId = references[i];
                 Transaction memory transaction = transactions[transactionId];
                 uint256 secondsPerMonth = 60 * 60 * 24 * 30;
-                if(transaction.timestamp >= now - secondsPerMonth) 
+                if(transaction.state == State.Completed && 
+                   transaction.timestamp >= now - secondsPerMonth) 
                 {
                     cumulativeAmount += transaction.amountFIAT;
                 }
@@ -229,8 +236,8 @@ contract CardFunding /*is AirnodeClient*/ {
     // Check if a transaction is already processing to prevent reentrancy attacks
     modifier checkLocking() 
     {
-        uint256 txTimeLimit = 60 * 30;
-        require(lastLocked == 0 || lastLocked < now - txTimeLimit, "A transaction is in progress");
+        //uint256 txTimeLimit = 60 * 30;
+        require(lastLocked == 0 /*|| lastLocked < now - txTimeLimit*/, "A transaction is in progress");
         _;
     }
 

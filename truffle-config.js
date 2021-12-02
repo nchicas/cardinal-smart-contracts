@@ -8,10 +8,6 @@ if (!mnemonic || mnemonic.split(' ').length !== 12) {
   console.log('unable to retrieve mnemonic from .secret');
 }
 
-//Ganache
-const PrivateKeyProvider = require('truffle-privatekey-provider');
-const privateKey = '6a18874cc4359e2eb25dd045346d6b4ad1c8f26f98087e1a3f9250cf4458c062';
-
 //Update gas price Testnet
 /* Run this first, to use the result in truffle-config:
   curl https://public-node.testnet.rsk.co/ -X POST -H "Content-Type: application/json" \
@@ -50,12 +46,10 @@ module.exports = {
    */
 
   networks: {
-    ganache: {
-      provider: new PrivateKeyProvider(privateKey, 'http://127.0.0.1:7545'),
+    develop: {
       host: '127.0.0.1',
       port: 7545,
       network_id: 5777,
-      from: '0xf933F7B4ed6660058c9b11c9bA0121f888Ff14f8',
       gasPrice: 20000000000,
       gas: 6721975,
     },
