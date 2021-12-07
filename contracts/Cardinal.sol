@@ -1,5 +1,5 @@
 /*
- * Cardinal: Smart virtual debit card funded by Bitcoins
+ * Cardinal: Smart virtual debit card funded with Bitcoins
  * 
  * Cardinal connects with banks using OBP standard to provide a virtual debit card to its clients,
  * the transactions with the card are funded with a Bitcoin wallet from the client and transferred
@@ -12,9 +12,9 @@
 //SPDX-License-Identifier: MIT
 pragma solidity 0.6.12;
 
-//import "@api3/airnode-protocol/contracts/AirnodeClient.sol";
+import "@api3/airnode-protocol/contracts/AirnodeClient.sol";
 
-contract Cardinal /*is AirnodeClient*/ {
+contract Cardinal is AirnodeClient {
 
     enum State { None, Initiated, Completed, Reverted }
 
@@ -27,12 +27,16 @@ contract Cardinal /*is AirnodeClient*/ {
     }
 
     event FundsAdded(uint256 amount);
-    event PaymentCompleted(uint256 amount);
-    event PaymentDeclined();
+    event TransactionConfirmed(bytes32 transactionId, bytes32 referenceCode);
+    event PaymentCompleted(bytes32 transactionId);
+    event PaymentDeclined(bytes32 transactionId);
+
+    mapping(bytes32 => bool) public incomingFulfillments;
+    mapping(bytes32 => bytes32) public fulfilledData;
 
     address payable public bank;
     address public cardholder;
-    bytes32 internal cardId;
+    bytes internal cardId;
     uint256 internal maxAmountPerTx;
     uint256 internal maxAmountPerMonth;
 
@@ -48,12 +52,14 @@ contract Cardinal /*is AirnodeClient*/ {
     // Maximum amount per transaction: The maximum amount allowed to be processed per transaction
     // Maximum amount per month: The maximum cumulative amount allowed to be processed in the last 30 days
     constructor(
+        address airnodeAddress,
         address payable _bank, 
         address _cardholder, 
-        bytes32 _cardId,
+        bytes memory _cardId,
         uint256 _maxAmountPerTx,
         uint256 _maxAmountPerMonth)
             public 
+            AirnodeClient(airnodeAddress)
     {
         cardholder = _cardholder;
         bank = _bank;
@@ -88,23 +94,23 @@ contract Cardinal /*is AirnodeClient*/ {
     // If a payment flow is started with the associated card, we hold the BTC equivalent amount
     // of the transaction for secure funding the payment, waiting for the response of the card network
     function requestFunds(
-        bytes32 requesterCard, 
-        uint256 amount,
+        bytes memory requesterCard, 
+        uint256 amountFIAT,
+        uint256 amountBTC,
         bytes32 currency, 
         bytes32 referenceCode) 
             external 
             payable 
             onlyBank  
             checkLocking
-            validateAML(amount) 
+            validateAML(amountFIAT) 
     {
-        uint256 amountBTC = convertToBTC(amount, currency);
-        require(requesterCard == cardId, "Not valid card");
+        //require(requesterCard == cardId, "Not valid card");
         require(address(this).balance >= amountBTC, "Insufficient funds");
 
         Transaction memory transaction = Transaction({
             currency: currency,
-            amountFIAT: amount,
+            amountFIAT: amountFIAT,
             amountBTC: amountBTC,
             state: State.Initiated,
             timestamp: now
@@ -114,31 +120,13 @@ contract Cardinal /*is AirnodeClient*/ {
         transactions[transactionId] = transaction;
         references[transactionCount++] = transactionId;
 
-        confirmTransaction(referenceCode);
-    }
-
-    // Getting BTC price for the transaction currency
-    function convertToBTC(uint256 amount, bytes32 currency) 
-        internal 
-        pure
-        returns (uint256) 
-    {
-        // Simulation
-        sha256(abi.encodePacked(currency)); //
-        return amount * 1000;
-    }
-
-    // If the funds are secured, with notify the bank to procede with the transactions
-    function confirmTransaction(bytes32 referenceCode) 
-        internal 
-    {
-        sha256(abi.encodePacked(referenceCode)); //
         lastLocked = now;
+        emit TransactionConfirmed(transactionId, referenceCode);
     }
 
     // If the payment processor succesfully charges the smart card, the transaction funds
     // will be transfered to the bank 
-    function completeTransaction(bytes32 requesterCard, bytes32 referenceCode) 
+    function completeTransaction(bytes memory requesterCard, bytes32 referenceCode) 
         public 
         payable 
         onlyBank 
@@ -149,17 +137,17 @@ contract Cardinal /*is AirnodeClient*/ {
         transaction.state = State.Completed;
         transaction.timestamp = now;
 
-        //Transfer funds to the bank and realease lock
+        //Transfer funds to the bank
         (bool success, ) = bank.call{value:transaction.amountBTC}('');
         assert(success);
-        lastLocked = 0;
 
-        emit PaymentCompleted(transaction.amountBTC);
+        lastLocked = 0;
+        emit PaymentCompleted(transactionId);
     }
 
     // If the payment processor fails to process the payments, the transactions funds
     // will be reverted to the smart contract 
-    function revertTransaction(bytes32 requesterCard, bytes32 referenceCode) 
+    function revertTransaction(bytes memory requesterCard, bytes32 referenceCode) 
         public 
         payable 
         onlyBank 
@@ -170,10 +158,8 @@ contract Cardinal /*is AirnodeClient*/ {
         transaction.state = State.Reverted;
         transaction.timestamp = now;
 
-        //Release lock
         lastLocked = 0;
-
-        emit PaymentDeclined();
+        emit PaymentDeclined(transactionId);
     }
 
     /***** Getters *****/
@@ -186,12 +172,12 @@ contract Cardinal /*is AirnodeClient*/ {
         return address(this).balance;
     }
 
-    /*function getTransactions() 
+    /*function getTransaction(bytes32 transactionId) 
         public 
         view 
-        returns (mapping(bytes32 => Transaction) memory) 
+        returns (Transaction) 
     {
-        return transactions;
+        return transactions[transactionId];
     }*/
 
     /***** Modifiers *****/
@@ -242,11 +228,49 @@ contract Cardinal /*is AirnodeClient*/ {
     }
 
     // A valid and existing transaction should be sent
-    modifier validTransaction(bytes32 requesterCard, bytes32 referenceCode) 
+    modifier validTransaction(bytes memory requesterCard, bytes32 referenceCode) 
     {
         bytes32 transactionId = sha256(abi.encodePacked(requesterCard, referenceCode));
         Transaction memory transaction = transactions[transactionId];
         assert(transaction.timestamp != 0);
         _;
+    }
+
+    /***** Airnode *****/
+
+    function makeRequest(
+        bytes32 providerId,
+        bytes32 endpointId,
+        uint256 requesterInd,
+        address designatedWallet,
+        bytes calldata parameters)
+            external
+    {
+        bytes32 requestId = airnode.makeFullRequest(
+            providerId,
+            endpointId,
+            requesterInd,
+            designatedWallet,
+            address(this),
+            this.fulfill.selector,
+            parameters
+        );
+        incomingFulfillments[requestId] = true;
+    }
+
+    function fulfill(
+        bytes32 requestId,
+        uint256 statusCode,
+        bytes32 data)
+            external
+            onlyAirnode()
+    {
+        require(incomingFulfillments[requestId], "No such request made");
+        delete incomingFulfillments[requestId];
+        if (statusCode == 0) {
+            fulfilledData[requestId] = data;
+        } else {
+            fulfilledData[requestId] = bytes32(statusCode);
+        }
     }
 }
